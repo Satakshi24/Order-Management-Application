@@ -1,7 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
 
-const API_URL = 'http://localhost:3000';
+const API = process.env.REACT_APP_API_URL;
+console.log('API:', API); 
+if (!API) console.warn('REACT_APP_API_URL is missing');
+
+export async function loadOrders() {
+  const res = await fetch(`${API}/orders`, { credentials: 'include' });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`GET /orders failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}
 
 function App() {
   const [orders, setOrders] = useState([]);
@@ -16,23 +27,40 @@ function App() {
   }, [page, search]);
 
   function fetchOrders() {
-    setLoading(true);
-    let url = `${API_URL}/orders?page=${page}&limit=5`;
-    if (search) url += `&search=${search}`;
+  setLoading(true);
 
-    fetch(url)
-      .then(res => res.json())
-      .then(data => {
-        setOrders(data.data);
-        setTotalPages(data.pagination.totalPages);
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error(err);
-        alert('Failed to load orders. Is backend running?');
-        setLoading(false);
-      });
+  // Ensure the env var is present and has no trailing slash in Vercel
+  const base = API; // from const API = process.env.REACT_APP_API_URL
+  if (!base) {
+    console.warn('REACT_APP_API_URL is missing'); 
   }
+
+  // Build URL safely
+  const url = new URL('/orders', base);
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: '5',
+  });
+  if (search) params.set('search', search);
+  url.search = params.toString();
+
+  fetch(url.toString(), { credentials: 'include' })
+    .then(res => {
+      if (!res.ok) return res.text().then(t => { throw new Error(`${res.status} ${t}`); });
+      return res.json();
+    })
+    .then(data => {
+      setOrders(data.data);
+      setTotalPages(data.pagination.totalPages);
+      setLoading(false);
+    })
+    .catch(err => {
+      console.error('GET /orders failed:', err);
+      alert('Failed to load orders. Is backend running?');
+      setLoading(false);
+    });
+}
+
 
   function handleSearch(e) {
     setSearch(e.target.value);

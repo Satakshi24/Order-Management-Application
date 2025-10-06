@@ -27,8 +27,17 @@ let redisClient;
 })();
 
 app.use(express.json());
-app.use(cors());
+const allowed = [process.env.FRONTEND_URL];
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin || allowed.includes(origin)) return cb(null, true);
+    cb(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+}));
 
+// Optional: handle preflight explicitly
+app.options('*', cors());
 // Mock Queue (NEW - simulates SQS)
 function addToQueue(jobType, data) {
   console.log(`📬 Queue: ${jobType}`, data);
