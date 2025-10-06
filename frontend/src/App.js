@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import './App.css';
 
-const API = process.env.REACT_APP_API_URL; // e.g., https://<your-api>.onrender.com
+const API = process.env.REACT_APP_API_URL;
 console.log('API:', API);
 if (!API) console.warn('REACT_APP_API_URL is missing');
 
-// Helpers
 async function safeJson(res) {
   const text = await res.text();
   try { return JSON.parse(text); } catch { return { _raw: text }; }
@@ -207,13 +206,11 @@ function CreateOrderForm({ onSuccess }) {
   function updateItem(index, field, value) {
     setSelectedItems(prev => {
       const next = [...prev];
-      // Store quantity as string; clamp later when rendering
       next[index] = { ...next[index], [field]: value };
       return next;
     });
   }
 
-  // Total = sum(price * quantity); IDs compared as strings
   const total = useMemo(() => {
     let sum = 0;
     for (const item of selectedItems) {
@@ -231,7 +228,6 @@ function CreateOrderForm({ onSuccess }) {
   async function handleSubmit(e) {
   e.preventDefault();
 
-  // 🔧 VALIDATION: keep as string; empty string means “not selected”
   const userIdRaw = String(selectedUserId || '');
   if (!userIdRaw) {
     alert('Please select a user');
@@ -253,7 +249,6 @@ function CreateOrderForm({ onSuccess }) {
   try {
     setLoading(true);
 
-    // convert IDs to number only if they are numeric; otherwise send strings
     const payload = {
       userId: Number.isFinite(Number(userIdRaw)) ? Number(userIdRaw) : userIdRaw,
       items: validItems.map(i => ({
@@ -328,7 +323,7 @@ function CreateOrderForm({ onSuccess }) {
               <input
                 type="number"
                 min="1"
-                max={stock || 1} // clamp by available stock
+                max={stock || 1}
                 value={qtyNum}
                 onChange={(e) => {
                   const raw = Number(e.target.value);

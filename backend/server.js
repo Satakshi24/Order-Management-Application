@@ -1,6 +1,3 @@
-// server.js
-// Express + Prisma (PostgreSQL) + Redis caching (Upstash-compatible)
-
 const express = require('express');
 const cors = require('cors');
 const { PrismaClient } = require('@prisma/client');
@@ -10,16 +7,10 @@ const app = express();
 const prisma = new PrismaClient();
 
 const PORT = process.env.PORT || 3000;
-const FRONTEND = process.env.FRONTEND_URL;   // e.g. https://order-management-application-alpha.vercel.app
-const REDIS_URL = process.env.REDIS_URL;     // e.g. rediss://:PASSWORD@HOST:PORT
+const FRONTEND = process.env.FRONTEND_URL;
+const REDIS_URL = process.env.REDIS_URL;
 
-// -----------------------------
-// Middleware
-// -----------------------------
 app.use(express.json());
-
-// CORS: during debugging you can use `app.use(cors())`.
-// Once working, prefer the allow-list below:
 if (FRONTEND) {
   const allowed = [FRONTEND];
   app.use(cors({
@@ -30,20 +21,16 @@ if (FRONTEND) {
     credentials: true,
   }));
 } else {
-  // Fall back to permissive CORS if FRONTEND_URL isn't set
   console.warn('[cors] FRONTEND_URL not set — using permissive CORS for now');
   app.use(cors());
 }
 
-// -----------------------------
-// Redis (guarded; won’t crash app if unavailable)
-// -----------------------------
 let redisClient = null;
 let redisReady = false;
 
 if (REDIS_URL) {
   redisClient = createClient({
-    url: REDIS_URL,                         // Upstash recommended: rediss://…
+    url: REDIS_URL,                      
     socket: { tls: REDIS_URL.startsWith('rediss://'), rejectUnauthorized: false },
   });
   redisClient.on('error', (e) => console.error('[redis] error:', e));
@@ -54,9 +41,6 @@ if (REDIS_URL) {
   console.warn('[redis] REDIS_URL not set; caching disabled');
 }
 
-// -----------------------------
-// Cache helpers (versioned keys → cheap invalidation)
-// -----------------------------
 let ORDERS_VER = 1;
 
 async function getOrdersVer() {
@@ -76,9 +60,6 @@ function buildOrdersKey({ page, limit, search, ver }) {
   return `orders:v${ver}:page=${page}&limit=${limit}&search=${search || ''}`;
 }
 
-// -----------------------------
-// Health check
-// -----------------------------
 app.get('/healthz', async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -89,10 +70,6 @@ app.get('/healthz', async (_req, res) => {
   }
 });
 
-// -----------------------------
-// GET /orders  (with Redis cache)
-// ?page=1&limit=5&search=foo
-// -----------------------------
 app.get('/orders', async (req, res) => {
   try {
     const page  = Math.max(1, parseInt(req.query.page || '1', 10));
@@ -112,7 +89,6 @@ app.get('/orders', async (req, res) => {
     }
     console.log('💾 Cache MISS');
 
-    // Prisma relation filter (note the `is: { ... }` for a 1:1/required relation)
     const where = search
       ? { user: { is: { OR: [
             { name:  { contains: search, mode: 'insensitive' } },
@@ -155,10 +131,6 @@ app.get('/orders', async (req, res) => {
   }
 });
 
-// -----------------------------
-// POST /orders  (transaction + stock checks + cache invalidation)
-// Body: { userId: <id>, items: [{ productId, quantity }] }
-// -----------------------------
 app.post('/orders', async (req, res) => {
   try {
     const { userId, items } = req.body || {};
@@ -166,18 +138,15 @@ app.post('/orders', async (req, res) => {
       return res.status(400).json({ error: 'userId and items required' });
     }
 
-    // Ensure user exists
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // Load products
     const productIds = items.map(i => i.productId);
     const products = await prisma.product.findMany({ where: { id: { in: productIds } } });
     if (products.length !== items.length) {
       return res.status(404).json({ error: 'Some products not found' });
     }
 
-    // Validate stock & compute total using DB prices (never trust FE price)
     let total = 0;
     const orderItemsData = [];
     for (const item of items) {
@@ -194,7 +163,6 @@ app.post('/orders', async (req, res) => {
       orderItemsData.push({ productId: product.id, quantity: q, price: product.price });
     }
 
-    // Transaction: create order + decrement stock
     const order = await prisma.$transaction(async (tx) => {
       const created = await tx.order.create({
         data: {
@@ -208,7 +176,7 @@ app.post('/orders', async (req, res) => {
         },
       });
 
-      // Decrement stock for each item
+
       for (const i of items) {
         await tx.product.update({
           where: { id: i.productId },
@@ -219,23 +187,18 @@ app.post('/orders', async (req, res) => {
       return created;
     });
 
-    // Invalidate cached lists (version bump)
     await bumpOrdersVer();
 
-    // Mock async queue (simulates SQS/email/etc.)
+
     console.log('📬 Queue: confirm_order', { orderId: order.id, userEmail: user.email, total: order.total });
 
     res.status(201).json(order);
   } catch (error) {
     console.error('POST /orders failed:', error);
-    // P2003 etc. will show up in detail; you can map codes to nicer messages if you want
     res.status(500).json({ error: 'INTERNAL', detail: String(error) });
   }
 });
 
-// -----------------------------
-// Simple pass-through endpoints
-// -----------------------------
 app.get('/users', async (_req, res) => {
   try {
     const users = await prisma.user.findMany();
@@ -254,9 +217,6 @@ app.get('/products', async (_req, res) => {
   }
 });
 
-// -----------------------------
-// Process guards & start
-// -----------------------------
 process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
 process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
 
