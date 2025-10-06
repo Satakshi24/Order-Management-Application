@@ -229,57 +229,63 @@ function CreateOrderForm({ onSuccess }) {
   }, [selectedItems, products]);
 
   async function handleSubmit(e) {
-    e.preventDefault();
+  e.preventDefault();
 
-    const userId = Number(selectedUserId);
-    if (!userId) {
-      alert('Please select a user');
-      return;
-    }
-
-    const validItems = selectedItems
-      .map(i => ({
-        productId: String(i.productId),
-        quantity: Math.max(1, Number(i.quantity || 0))
-      }))
-      .filter(i => i.productId && i.quantity > 0);
-
-    if (validItems.length === 0) {
-      alert('Please add at least one product');
-      return;
-    }
-
-    try {
-      setLoading(true);
-      const res = await fetch(new URL('/orders', API).toString(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          userId,
-          items: validItems.map(i => ({
-            productId: Number.isFinite(Number(i.productId)) ? Number(i.productId) : i.productId,
-            quantity: i.quantity
-          }))
-        }),
-      });
-
-      if (!res.ok) {
-        const body = await safeJson(res);
-        const msg = body?.error || body?.detail || 'Unknown error';
-        throw new Error(`Create order failed (${res.status}): ${msg}`);
-      }
-
-      await res.json();
-      alert('✅ Order created!');
-      onSuccess();
-    } catch (err) {
-      console.error(err);
-      alert('❌ ' + (err.message || 'Failed to create order'));
-    } finally {
-      setLoading(false);
-    }
+  // 🔧 VALIDATION: keep as string; empty string means “not selected”
+  const userIdRaw = String(selectedUserId || '');
+  if (!userIdRaw) {
+    alert('Please select a user');
+    return;
   }
+
+  const validItems = selectedItems
+    .map(i => ({
+      productId: String(i.productId),
+      quantity: Math.max(1, Number(i.quantity || 0))
+    }))
+    .filter(i => i.productId && i.quantity > 0);
+
+  if (validItems.length === 0) {
+    alert('Please add at least one product');
+    return;
+  }
+
+  try {
+    setLoading(true);
+
+    // convert IDs to number only if they are numeric; otherwise send strings
+    const payload = {
+      userId: Number.isFinite(Number(userIdRaw)) ? Number(userIdRaw) : userIdRaw,
+      items: validItems.map(i => ({
+        productId: Number.isFinite(Number(i.productId)) ? Number(i.productId) : i.productId,
+        quantity: i.quantity,
+      })),
+    };
+
+    const res = await fetch(new URL('/orders', API).toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const body = await safeJson(res);
+      const msg = body?.error || body?.detail || 'Unknown error';
+      throw new Error(`Create order failed (${res.status}): ${msg}`);
+    }
+
+    await res.json();
+    alert('✅ Order created!');
+    onSuccess();
+  } catch (err) {
+    console.error(err);
+    alert('❌ ' + (err.message || 'Failed to create order'));
+  } finally {
+    setLoading(false);
+  }
+}
+
 
   return (
     <form onSubmit={handleSubmit} className="create-form">
