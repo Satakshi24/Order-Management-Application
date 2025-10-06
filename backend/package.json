@@ -9,12 +9,12 @@
     "seed": "node prisma/seed.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
+    "@prisma/client": "^6.16.3",
     "cors": "^2.8.5",
-    "@prisma/client": "^5.7.0",
+    "express": "^4.18.2",
     "redis": "^4.6.0"
   },
   "devDependencies": {
-    "prisma": "^5.7.0"
+    "prisma": "^6.16.3"
   }
 }
