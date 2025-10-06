@@ -1,0 +1,20 @@
+{
+  "name": "order-backend",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "@prisma/client": "^5.7.0",
+    "redis": "^4.6.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.7.0"
+  }
+}
