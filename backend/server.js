@@ -1,84 +1,125 @@
-// UPGRADED: SQLite → Prisma + PostgreSQL + Redis
+// server.js
+// Express + Prisma (PostgreSQL) + Redis caching (Upstash-compatible)
+
 const express = require('express');
 const cors = require('cors');
 const { PrismaClient } = require('@prisma/client');
 const { createClient } = require('redis');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Setup Prisma (replaces SQLite)
 const prisma = new PrismaClient();
 
-// Setup Redis (NEW - for caching)
-let redisClient;
-(async () => {
-  redisClient = createClient({
-    url: process.env.REDIS_URL,
-    socket: {
-      tls: true,              // ADD THIS LINE
-      rejectUnauthorized: false  // ADD THIS LINE
-    }
-  });
-  
-  redisClient.on('error', (err) => console.log('Redis error:', err));
-  await redisClient.connect();
-  console.log('✅ Redis connected');
-})();
+const PORT = process.env.PORT || 3000;
+const FRONTEND = process.env.FRONTEND_URL;   // e.g. https://order-management-application-alpha.vercel.app
+const REDIS_URL = process.env.REDIS_URL;     // e.g. rediss://:PASSWORD@HOST:PORT
 
+// -----------------------------
+// Middleware
+// -----------------------------
 app.use(express.json());
-const allowed = [process.env.FRONTEND_URL];
-app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin || allowed.includes(origin)) return cb(null, true);
-    cb(new Error('Not allowed by CORS'));
-  },
-  credentials: true,
-}));
 
-// Optional: handle preflight explicitly
-app.options('*', cors());
-// Mock Queue (NEW - simulates SQS)
-function addToQueue(jobType, data) {
-  console.log(`📬 Queue: ${jobType}`, data);
-  setTimeout(() => {
-    console.log(`✅ Processed: ${jobType} for order ${data.orderId}`);
-  }, 2000);
+// CORS: during debugging you can use `app.use(cors())`.
+// Once working, prefer the allow-list below:
+if (FRONTEND) {
+  const allowed = [FRONTEND];
+  app.use(cors({
+    origin: (origin, cb) => {
+      if (!origin || allowed.includes(origin)) return cb(null, true);
+      return cb(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  }));
+} else {
+  // Fall back to permissive CORS if FRONTEND_URL isn't set
+  console.warn('[cors] FRONTEND_URL not set — using permissive CORS for now');
+  app.use(cors());
 }
 
-// ==========================================
-// GET /orders - WITH REDIS CACHING
-// ==========================================
+// -----------------------------
+// Redis (guarded; won’t crash app if unavailable)
+// -----------------------------
+let redisClient = null;
+let redisReady = false;
+
+if (REDIS_URL) {
+  redisClient = createClient({
+    url: REDIS_URL,                         // Upstash recommended: rediss://…
+    socket: { tls: REDIS_URL.startsWith('rediss://'), rejectUnauthorized: false },
+  });
+  redisClient.on('error', (e) => console.error('[redis] error:', e));
+  redisClient.connect()
+    .then(() => { redisReady = true; console.log('[redis] ready'); })
+    .catch((e) => console.error('[redis] connect failed:', e));
+} else {
+  console.warn('[redis] REDIS_URL not set; caching disabled');
+}
+
+// -----------------------------
+// Cache helpers (versioned keys → cheap invalidation)
+// -----------------------------
+let ORDERS_VER = 1;
+
+async function getOrdersVer() {
+  if (redisClient && redisReady) {
+    const v = await redisClient.get('orders:ver');
+    if (v) ORDERS_VER = Number(v);
+  }
+  return ORDERS_VER;
+}
+async function bumpOrdersVer() {
+  ORDERS_VER += 1;
+  if (redisClient && redisReady) {
+    await redisClient.set('orders:ver', String(ORDERS_VER));
+  }
+}
+function buildOrdersKey({ page, limit, search, ver }) {
+  return `orders:v${ver}:page=${page}&limit=${limit}&search=${search || ''}`;
+}
+
+// -----------------------------
+// Health check
+// -----------------------------
+app.get('/healthz', async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    const ping = (redisClient && redisReady) ? await redisClient.ping() : 'disabled';
+    res.json({ ok: true, redis: ping });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+// -----------------------------
+// GET /orders  (with Redis cache)
+// ?page=1&limit=5&search=foo
+// -----------------------------
 app.get('/orders', async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const search = req.query.search || '';
+    const page  = Math.max(1, parseInt(req.query.page || '1', 10));
+    const limit = Math.max(1, parseInt(req.query.limit || '10', 10));
+    const search = String(req.query.search || '');
     const skip = (page - 1) * limit;
 
-    // Cache key
-    const cacheKey = `orders:page:${page}:limit:${limit}:search:${search}`;
+    const ver = await getOrdersVer();
+    const cacheKey = buildOrdersKey({ page, limit, search, ver });
 
-    // Check Redis cache
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      console.log('✨ Cache HIT - returning from Redis');
-      return res.json(JSON.parse(cached));
-    }
-
-    console.log('💾 Cache MISS - fetching from database');
-
-    // Build search filter
-    const where = search ? {
-      user: {
-        OR: [
-          { name: { contains: search, mode: 'insensitive' } },
-          { email: { contains: search, mode: 'insensitive' } }
-        ]
+    if (redisClient && redisReady) {
+      const cached = await redisClient.get(cacheKey);
+      if (cached) {
+        console.log('✨ Cache HIT');
+        return res.json(JSON.parse(cached));
       }
-    } : {};
+    }
+    console.log('💾 Cache MISS');
 
-    // Fetch from database (Prisma replaces raw SQL)
+    // Prisma relation filter (note the `is: { ... }` for a 1:1/required relation)
+    const where = search
+      ? { user: { is: { OR: [
+            { name:  { contains: search, mode: 'insensitive' } },
+            { email: { contains: search, mode: 'insensitive' } },
+        ] } } }
+      : {};
+
     const [orders, total] = await Promise.all([
       prisma.order.findMany({
         where,
@@ -86,158 +127,145 @@ app.get('/orders', async (req, res) => {
         take: limit,
         include: {
           user: true,
-          orderItems: {
-            include: { product: true }
-          }
+          orderItems: { include: { product: true } },
         },
-        orderBy: { createdAt: 'desc' }
+        orderBy: { createdAt: 'desc' },
       }),
-      prisma.order.count({ where })
+      prisma.order.count({ where }),
     ]);
 
-    const response = {
+    const payload = {
       data: orders,
       pagination: {
         page,
         limit,
         total,
-        totalPages: Math.ceil(total / limit)
-      }
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
     };
 
-    // Cache for 30 seconds
-    await redis.setEx(cacheKey, 30, JSON.stringify(response));
-    console.log('💾 Cached for 30 seconds');
+    if (redisClient && redisReady) {
+      await redisClient.setEx(cacheKey, 30, JSON.stringify(payload)); // 30s TTL
+    }
 
-    res.json(response);
+    res.json(payload);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
+    console.error('GET /orders failed:', error);
+    res.status(500).json({ error: 'INTERNAL', detail: String(error) });
   }
 });
 
-// ==========================================
-// POST /orders - WITH TRANSACTION
-// ==========================================
+// -----------------------------
+// POST /orders  (transaction + stock checks + cache invalidation)
+// Body: { userId: <id>, items: [{ productId, quantity }] }
+// -----------------------------
 app.post('/orders', async (req, res) => {
   try {
-    const { userId, items } = req.body;
-
-    if (!userId || !items || items.length === 0) {
+    const { userId, items } = req.body || {};
+    if (!userId || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'userId and items required' });
     }
 
-    // Check user exists
+    // Ensure user exists
     const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // Get products
-    const productIds = items.map(item => item.productId);
-    const products = await prisma.product.findMany({
-      where: { id: { in: productIds } }
-    });
-
+    // Load products
+    const productIds = items.map(i => i.productId);
+    const products = await prisma.product.findMany({ where: { id: { in: productIds } } });
     if (products.length !== items.length) {
       return res.status(404).json({ error: 'Some products not found' });
     }
 
-    // Calculate total & validate stock
+    // Validate stock & compute total using DB prices (never trust FE price)
     let total = 0;
     const orderItemsData = [];
-
     for (const item of items) {
       const product = products.find(p => p.id === item.productId);
-      
-      if (product.stock < item.quantity) {
-        return res.status(400).json({
-          error: `Not enough stock for ${product.name}. Available: ${product.stock}`
-        });
+      if (!product) return res.status(404).json({ error: `Product ${item.productId} not found` });
+
+      const q = Number(item.quantity || 0);
+      if (q < 1) return res.status(400).json({ error: `Invalid quantity for product ${product.id}` });
+      if (product.stock < q) {
+        return res.status(400).json({ error: `Not enough stock for ${product.name}. Available: ${product.stock}` });
       }
 
-      total += product.price * item.quantity;
-      orderItemsData.push({
-        productId: product.id,
-        quantity: item.quantity,
-        price: product.price
-      });
+      total += product.price * q;
+      orderItemsData.push({ productId: product.id, quantity: q, price: product.price });
     }
 
-    // TRANSACTION - All succeed or all fail
+    // Transaction: create order + decrement stock
     const order = await prisma.$transaction(async (tx) => {
-      // Create order
-      const newOrder = await tx.order.create({
+      const created = await tx.order.create({
         data: {
           userId,
           total,
-          orderItems: { create: orderItemsData }
+          orderItems: { create: orderItemsData },
         },
         include: {
           user: true,
-          orderItems: { include: { product: true } }
-        }
+          orderItems: { include: { product: true } },
+        },
       });
 
-      // Update stock
-      for (const item of items) {
+      // Decrement stock for each item
+      for (const i of items) {
         await tx.product.update({
-          where: { id: item.productId },
-          data: { stock: { decrement: item.quantity } }
+          where: { id: i.productId },
+          data: { stock: { decrement: Number(i.quantity) } },
         });
       }
 
-      return newOrder;
+      return created;
     });
 
-    // CACHE INVALIDATION - Clear all cached orders
-    const keys = await redis.keys('orders:*');
-    if (keys.length > 0) {
-      await redis.del(keys);
-      console.log('🗑️ Cache invalidated');
-    }
+    // Invalidate cached lists (version bump)
+    await bumpOrdersVer();
 
-    // QUEUE - Add async job
-    addToQueue('confirm_order', {
-      orderId: order.id,
-      userEmail: user.email,
-      total: order.total
-    });
+    // Mock async queue (simulates SQS/email/etc.)
+    console.log('📬 Queue: confirm_order', { orderId: order.id, userEmail: user.email, total: order.total });
 
     res.status(201).json(order);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
+    console.error('POST /orders failed:', error);
+    // P2003 etc. will show up in detail; you can map codes to nicer messages if you want
+    res.status(500).json({ error: 'INTERNAL', detail: String(error) });
   }
 });
 
-// GET /users
-app.get('/users', async (req, res) => {
+// -----------------------------
+// Simple pass-through endpoints
+// -----------------------------
+app.get('/users', async (_req, res) => {
   try {
     const users = await prisma.user.findMany();
     res.json(users);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
   }
 });
 
-// GET /products
-app.get('/products', async (req, res) => {
+app.get('/products', async (_req, res) => {
   try {
     const products = await prisma.product.findMany();
     res.json(products);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`\n🚀 Server running on http://localhost:${PORT}`);
-  console.log('📊 Endpoints: GET/POST /orders, GET /users, GET /products\n');
-});
+// -----------------------------
+// Process guards & start
+// -----------------------------
+process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
+process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
 
 process.on('SIGINT', async () => {
-  await prisma.$disconnect();
-  await redis.quit();
-  process.exit();
+  try { await prisma.$disconnect(); } catch {}
+  try { if (redisClient) await redisClient.quit(); } catch {}
+  process.exit(0);
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 API listening on :${PORT}`);
 });
