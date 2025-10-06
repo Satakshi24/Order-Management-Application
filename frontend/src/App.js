@@ -207,12 +207,13 @@ function CreateOrderForm({ onSuccess }) {
   function updateItem(index, field, value) {
     setSelectedItems(prev => {
       const next = [...prev];
+      // Store quantity as string; clamp later when rendering
       next[index] = { ...next[index], [field]: value };
       return next;
     });
   }
 
-  // --- FIXED TOTAL: compare IDs as strings; coerce price & qty to numbers ---
+  // Total = sum(price * quantity); IDs compared as strings
   const total = useMemo(() => {
     let sum = 0;
     for (const item of selectedItems) {
@@ -221,10 +222,8 @@ function CreateOrderForm({ onSuccess }) {
       const product = products.find(p => String(p.id) === pid);
       if (!product) continue;
       const price = Number(product.price);
-      const qty = Number(item.quantity || 0);
-      if (Number.isFinite(price) && Number.isFinite(qty)) {
-        sum += price * qty;
-      }
+      const qty = Math.max(1, Number(item.quantity || 0));
+      if (Number.isFinite(price) && Number.isFinite(qty)) sum += price * qty;
     }
     return sum;
   }, [selectedItems, products]);
@@ -240,8 +239,8 @@ function CreateOrderForm({ onSuccess }) {
 
     const validItems = selectedItems
       .map(i => ({
-        productId: String(i.productId),               // keep as string; convert if numeric
-        quantity: Number(i.quantity)
+        productId: String(i.productId),
+        quantity: Math.max(1, Number(i.quantity || 0))
       }))
       .filter(i => i.productId && i.quantity > 0);
 
@@ -300,32 +299,45 @@ function CreateOrderForm({ onSuccess }) {
 
       <div className="form-group">
         <label>Select Products *</label>
-        {selectedItems.map((item, index) => (
-          <div key={index} className="item-row">
-            <select
-              value={item.productId}
-              onChange={(e) => updateItem(index, 'productId', e.target.value)}
-              required
-            >
-              <option value="">-- Choose Product --</option>
-              {products.map(product => (
-                <option key={product.id} value={product.id}>
-                  {product.name} - ${Number(product.price).toFixed(2)} (Stock: {product.stock})
-                </option>
-              ))}
-            </select>
-            <input
-              type="number"
-              min="1"
-              value={item.quantity}
-              onChange={(e) => updateItem(index, 'quantity', e.target.value)}
-              required
-            />
-            {selectedItems.length > 1 && (
-              <button type="button" onClick={() => removeItem(index)} className="btn-remove">✕</button>
-            )}
-          </div>
-        ))}
+        {selectedItems.map((item, index) => {
+          const product = products.find(p => String(p.id) === String(item.productId));
+          const stock = Number(product?.stock ?? 1);
+          const qtyNum = Math.max(1, Math.min(stock || 1, Number(item.quantity || 1)));
+
+          return (
+            <div key={index} className="item-row">
+              <select
+                value={item.productId}
+                onChange={(e) => updateItem(index, 'productId', e.target.value)}
+                required
+              >
+                <option value="">-- Choose Product --</option>
+                {products.map(product => (
+                  <option key={product.id} value={product.id}>
+                    {product.name} - ${Number(product.price).toFixed(2)} (Stock: {product.stock})
+                  </option>
+                ))}
+              </select>
+
+              <input
+                type="number"
+                min="1"
+                max={stock || 1} // clamp by available stock
+                value={qtyNum}
+                onChange={(e) => {
+                  const raw = Number(e.target.value);
+                  const clamped = Math.max(1, Math.min(stock || 1, raw || 1));
+                  updateItem(index, 'quantity', String(clamped));
+                }}
+                required
+              />
+
+              {selectedItems.length > 1 && (
+                <button type="button" onClick={() => removeItem(index)} className="btn-remove">✕</button>
+              )}
+            </div>
+          );
+        })}
         <button type="button" onClick={addItem} className="btn-add">+ Add Product</button>
       </div>
 
