@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import './App.css';
 
 const API = process.env.REACT_APP_API_URL; // e.g., https://<your-api>.onrender.com
@@ -51,7 +51,6 @@ function App() {
         return res.json();
       })
       .then((data) => {
-        // Backend returns { data: Order[], pagination: { totalPages, ... } }
         setOrders(Array.isArray(data?.data) ? data.data : []);
         setTotalPages(Number(data?.pagination?.totalPages || 1));
         setLoading(false);
@@ -182,7 +181,6 @@ function CreateOrderForm({ onSuccess }) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    // Load users/products safely
     (async () => {
       try {
         const [uRes, pRes] = await Promise.all([
@@ -199,29 +197,37 @@ function CreateOrderForm({ onSuccess }) {
   }, []);
 
   function addItem() {
-    setSelectedItems([...selectedItems, { productId: '', quantity: 1 }]);
+    setSelectedItems(prev => [...prev, { productId: '', quantity: 1 }]);
   }
 
   function removeItem(index) {
-    setSelectedItems(selectedItems.filter((_, i) => i !== index));
+    setSelectedItems(prev => prev.filter((_, i) => i !== index));
   }
 
   function updateItem(index, field, value) {
-    const newItems = [...selectedItems];
-    newItems[index][field] = value;
-    setSelectedItems(newItems);
+    setSelectedItems(prev => {
+      const next = [...prev];
+      next[index] = { ...next[index], [field]: value };
+      return next;
+    });
   }
 
-  function calculateTotal() {
-    let total = 0;
+  // --- FIXED TOTAL: compare IDs as strings; coerce price & qty to numbers ---
+  const total = useMemo(() => {
+    let sum = 0;
     for (const item of selectedItems) {
-      if (item.productId) {
-        const prod = products.find(p => p.id === Number(item.productId));
-        if (prod) total += Number(prod.price) * Number(item.quantity || 0);
+      const pid = String(item.productId || '');
+      if (!pid) continue;
+      const product = products.find(p => String(p.id) === pid);
+      if (!product) continue;
+      const price = Number(product.price);
+      const qty = Number(item.quantity || 0);
+      if (Number.isFinite(price) && Number.isFinite(qty)) {
+        sum += price * qty;
       }
     }
-    return total;
-  }
+    return sum;
+  }, [selectedItems, products]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -233,7 +239,10 @@ function CreateOrderForm({ onSuccess }) {
     }
 
     const validItems = selectedItems
-      .map(i => ({ productId: Number(i.productId), quantity: Number(i.quantity) }))
+      .map(i => ({
+        productId: String(i.productId),               // keep as string; convert if numeric
+        quantity: Number(i.quantity)
+      }))
       .filter(i => i.productId && i.quantity > 0);
 
     if (validItems.length === 0) {
@@ -247,7 +256,13 @@ function CreateOrderForm({ onSuccess }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ userId, items: validItems }),
+        body: JSON.stringify({
+          userId,
+          items: validItems.map(i => ({
+            productId: Number.isFinite(Number(i.productId)) ? Number(i.productId) : i.productId,
+            quantity: i.quantity
+          }))
+        }),
       });
 
       if (!res.ok) {
@@ -256,7 +271,7 @@ function CreateOrderForm({ onSuccess }) {
         throw new Error(`Create order failed (${res.status}): ${msg}`);
       }
 
-      await res.json(); // created order (not used here)
+      await res.json();
       alert('✅ Order created!');
       onSuccess();
     } catch (err) {
@@ -295,7 +310,7 @@ function CreateOrderForm({ onSuccess }) {
               <option value="">-- Choose Product --</option>
               {products.map(product => (
                 <option key={product.id} value={product.id}>
-                  {product.name} - ${product.price} (Stock: {product.stock})
+                  {product.name} - ${Number(product.price).toFixed(2)} (Stock: {product.stock})
                 </option>
               ))}
             </select>
@@ -315,7 +330,7 @@ function CreateOrderForm({ onSuccess }) {
       </div>
 
       <div className="total-section">
-        <strong>Total: ${calculateTotal().toFixed(2)}</strong>
+        <strong>Total: ${total.toFixed(2)}</strong>
       </div>
 
       <button type="submit" disabled={loading} className="btn-submit">
