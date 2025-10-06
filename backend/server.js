@@ -11,11 +11,18 @@ const PORT = process.env.PORT || 3000;
 const prisma = new PrismaClient();
 
 // Setup Redis (NEW - for caching)
-let redis;
+let redisClient;
 (async () => {
-  redis = createClient({ url: process.env.REDIS_URL || 'redis://localhost:6379' });
-  redis.on('error', (err) => console.log('Redis error:', err));
-  await redis.connect();
+  redisClient = createClient({
+    url: process.env.REDIS_URL || 'redis://localhost:6379',
+    socket: {
+      tls: true,              // ADD THIS LINE
+      rejectUnauthorized: false  // ADD THIS LINE
+    }
+  });
+  
+  redisClient.on('error', (err) => console.log('Redis error:', err));
+  await redisClient.connect();
   console.log('✅ Redis connected');
 })();
 
