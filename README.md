@@ -4,9 +4,9 @@ A full-stack order management application built with modern technologies includi
 
 ## 🔗 Live Demo
 
-- **Frontend**: [https://your-app.vercel.app](https://your-app.vercel.app)
-- **Backend**: [https://your-backend.onrender.com](https://your-backend.onrender.com)
-- **GitHub**: [https://github.com/Satakshi24/Order-management](https://github.com/Satakshi24/Order-management)
+- **Frontend**: [https://order-management-application-alpha.vercel.app/]
+- **Backend**: [https://order-management-application-zq24.onrender.com]
+- **GitHub**: [https://github.com/Satakshi24/Order-Management-Application]
 
 ## 🛠️ Tech Stack
 
