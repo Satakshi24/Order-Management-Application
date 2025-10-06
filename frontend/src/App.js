@@ -1,12 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
 
-const API = process.env.REACT_APP_API_URL;
-console.log('API:', API); 
+const API = process.env.REACT_APP_API_URL; // e.g., https://<your-api>.onrender.com
+console.log('API:', API);
 if (!API) console.warn('REACT_APP_API_URL is missing');
 
+// Helpers
+async function safeJson(res) {
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return { _raw: text }; }
+}
+
 export async function loadOrders() {
-  const res = await fetch(`${API}/orders`, { credentials: 'include' });
+  const url = new URL('/orders', API);
+  const res = await fetch(url.toString(), { credentials: 'include' });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`GET /orders failed: ${res.status} ${text}`);
@@ -22,45 +29,39 @@ function App() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
 
-  useEffect(() => {
-    fetchOrders();
-  }, [page, search]);
+  useEffect(() => { fetchOrders(); }, [page, search]);
 
   function fetchOrders() {
-  setLoading(true);
+    setLoading(true);
 
-  // Ensure the env var is present and has no trailing slash in Vercel
-  const base = API; // from const API = process.env.REACT_APP_API_URL
-  if (!base) {
-    console.warn('REACT_APP_API_URL is missing'); 
+    const base = API;
+    if (!base) console.warn('REACT_APP_API_URL is missing');
+
+    const url = new URL('/orders', base);
+    const params = new URLSearchParams({ page: String(page), limit: '5' });
+    if (search) params.set('search', search);
+    url.search = params.toString();
+
+    fetch(url.toString(), { credentials: 'include' })
+      .then(async (res) => {
+        if (!res.ok) {
+          const t = await res.text();
+          throw new Error(`${res.status} ${t}`);
+        }
+        return res.json();
+      })
+      .then((data) => {
+        // Backend returns { data: Order[], pagination: { totalPages, ... } }
+        setOrders(Array.isArray(data?.data) ? data.data : []);
+        setTotalPages(Number(data?.pagination?.totalPages || 1));
+        setLoading(false);
+      })
+      .catch((err) => {
+        console.error('GET /orders failed:', err);
+        alert('Failed to load orders. Is backend running?');
+        setLoading(false);
+      });
   }
-
-  // Build URL safely
-  const url = new URL('/orders', base);
-  const params = new URLSearchParams({
-    page: String(page),
-    limit: '5',
-  });
-  if (search) params.set('search', search);
-  url.search = params.toString();
-
-  fetch(url.toString(), { credentials: 'include' })
-    .then(res => {
-      if (!res.ok) return res.text().then(t => { throw new Error(`${res.status} ${t}`); });
-      return res.json();
-    })
-    .then(data => {
-      setOrders(data.data);
-      setTotalPages(data.pagination.totalPages);
-      setLoading(false);
-    })
-    .catch(err => {
-      console.error('GET /orders failed:', err);
-      alert('Failed to load orders. Is backend running?');
-      setLoading(false);
-    });
-}
-
 
   function handleSearch(e) {
     setSearch(e.target.value);
@@ -125,7 +126,7 @@ function App() {
 }
 
 function OrderList({ orders }) {
-  if (orders.length === 0) {
+  if (!Array.isArray(orders) || orders.length === 0) {
     return (
       <div className="no-orders">
         <p>📭 No orders found</p>
@@ -135,30 +136,40 @@ function OrderList({ orders }) {
 
   return (
     <div className="orders-list">
-      {orders.map(order => (
-        <div key={order.id} className="order-card">
-          <div className="order-header">
-            <div>
-              <h3>Order #{order.id}</h3>
-              <p className="user-name">👤 {order.user_name}</p>
-              <p className="date">📅 {new Date(order.created_at).toLocaleDateString()}</p>
-            </div>
-            <div className="order-right">
-              <span className={`status ${order.status}`}>{order.status.toUpperCase()}</span>
-              <p className="total">${order.total.toFixed(2)}</p>
-            </div>
-          </div>
-          <div className="order-items">
-            <strong>Items:</strong>
-            {order.items && order.items.map(item => (
-              <div key={item.id} className="item">
-                <span>{item.product_name} × {item.quantity}</span>
-                <span>${(item.price * item.quantity).toFixed(2)}</span>
+      {orders.map((order) => {
+        const created = order.createdAt ? new Date(order.createdAt) : null;
+        const items = Array.isArray(order.orderItems) ? order.orderItems : [];
+
+        return (
+          <div key={order.id} className="order-card">
+            <div className="order-header">
+              <div>
+                <h3>Order #{order.id}</h3>
+                <p className="user-name">👤 {order.user?.name || 'Unknown User'}</p>
+                <p className="date">📅 {created ? created.toLocaleDateString() : '-'}</p>
               </div>
-            ))}
+              <div className="order-right">
+                <span className={`status ${order.status || 'pending'}`}>{(order.status || 'pending').toUpperCase()}</span>
+                <p className="total">${Number(order.total || 0).toFixed(2)}</p>
+              </div>
+            </div>
+
+            <div className="order-items">
+              <strong>Items:</strong>
+              {items.length === 0 ? (
+                <div className="item">—</div>
+              ) : (
+                items.map((item) => (
+                  <div key={item.id} className="item">
+                    <span>{item.product?.name || 'Product'} × {item.quantity}</span>
+                    <span>${Number(item.price * item.quantity).toFixed(2)}</span>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -171,8 +182,20 @@ function CreateOrderForm({ onSuccess }) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetch(`${API_URL}/users`).then(res => res.json()).then(setUsers);
-    fetch(`${API_URL}/products`).then(res => res.json()).then(setProducts);
+    // Load users/products safely
+    (async () => {
+      try {
+        const [uRes, pRes] = await Promise.all([
+          fetch(new URL('/users', API).toString()),
+          fetch(new URL('/products', API).toString()),
+        ]);
+        const [u, p] = await Promise.all([uRes.json(), pRes.json()]);
+        setUsers(Array.isArray(u) ? u : []);
+        setProducts(Array.isArray(p) ? p : []);
+      } catch (e) {
+        console.error('Preload failed', e);
+      }
+    })();
   }, []);
 
   function addItem() {
@@ -191,50 +214,57 @@ function CreateOrderForm({ onSuccess }) {
 
   function calculateTotal() {
     let total = 0;
-    selectedItems.forEach(item => {
+    for (const item of selectedItems) {
       if (item.productId) {
-        const product = products.find(p => p.id === parseInt(item.productId));
-        if (product) total += product.price * item.quantity;
+        const prod = products.find(p => p.id === Number(item.productId));
+        if (prod) total += Number(prod.price) * Number(item.quantity || 0);
       }
-    });
+    }
     return total;
   }
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault();
-    if (!selectedUserId) {
+
+    const userId = Number(selectedUserId);
+    if (!userId) {
       alert('Please select a user');
       return;
     }
 
-    const validItems = selectedItems.filter(item => item.productId && item.quantity > 0);
+    const validItems = selectedItems
+      .map(i => ({ productId: Number(i.productId), quantity: Number(i.quantity) }))
+      .filter(i => i.productId && i.quantity > 0);
+
     if (validItems.length === 0) {
       alert('Please add at least one product');
       return;
     }
 
-    setLoading(true);
-    fetch(`${API_URL}/orders`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userId: parseInt(selectedUserId),
-        items: validItems.map(item => ({
-          productId: parseInt(item.productId),
-          quantity: parseInt(item.quantity)
-        }))
-      })
-    })
-      .then(res => {
-        if (!res.ok) return res.json().then(err => { throw new Error(err.error); });
-        return res.json();
-      })
-      .then(() => {
-        alert('✅ Order created!');
-        onSuccess();
-      })
-      .catch(err => alert('❌ Error: ' + err.message))
-      .finally(() => setLoading(false));
+    try {
+      setLoading(true);
+      const res = await fetch(new URL('/orders', API).toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ userId, items: validItems }),
+      });
+
+      if (!res.ok) {
+        const body = await safeJson(res);
+        const msg = body?.error || body?.detail || 'Unknown error';
+        throw new Error(`Create order failed (${res.status}): ${msg}`);
+      }
+
+      await res.json(); // created order (not used here)
+      alert('✅ Order created!');
+      onSuccess();
+    } catch (err) {
+      console.error(err);
+      alert('❌ ' + (err.message || 'Failed to create order'));
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -246,7 +276,9 @@ function CreateOrderForm({ onSuccess }) {
         <select value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)} required>
           <option value="">-- Choose User --</option>
           {users.map(user => (
-            <option key={user.id} value={user.id}>{user.name} ({user.email})</option>
+            <option key={user.id} value={user.id}>
+              {user.name} ({user.email})
+            </option>
           ))}
         </select>
       </div>
@@ -255,7 +287,11 @@ function CreateOrderForm({ onSuccess }) {
         <label>Select Products *</label>
         {selectedItems.map((item, index) => (
           <div key={index} className="item-row">
-            <select value={item.productId} onChange={(e) => updateItem(index, 'productId', e.target.value)} required>
+            <select
+              value={item.productId}
+              onChange={(e) => updateItem(index, 'productId', e.target.value)}
+              required
+            >
               <option value="">-- Choose Product --</option>
               {products.map(product => (
                 <option key={product.id} value={product.id}>
