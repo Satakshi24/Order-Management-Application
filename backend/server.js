@@ -14,7 +14,7 @@ const prisma = new PrismaClient();
 let redisClient;
 (async () => {
   redisClient = createClient({
-    url: process.env.REDIS_URL || 'redis://localhost:6379',
+    url: process.env.REDIS_URL,
     socket: {
       tls: true,              // ADD THIS LINE
       rejectUnauthorized: false  // ADD THIS LINE
